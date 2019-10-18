@@ -132,7 +132,8 @@ class VanillaRNN(object):
         # Store the results in the variable output provided above as well as       #
         # values needed for the backward pass.                                     #
         ############################################################################
-        pass
+        next_h = np.tanh(prev_h.dot(self.params[self.wh_name]) + x.dot(self.params[self.wx_name]) + self.params[self.b_name])
+        meta = [x, prev_h, next_h]
         #############################################################################
         #                             END OF YOUR CODE                              #
         #############################################################################
@@ -155,7 +156,13 @@ class VanillaRNN(object):
         # Store the computed gradients for current layer in self.grads with         #
         # corresponding name.                                                       # 
         #############################################################################
-        pass
+        x, prev_h, next_h = meta
+        dtanh = dnext_h*(1.0-next_h**2)
+        dx = dtanh.dot(self.params[self.wx_name].T)
+        dprev_h = dtanh.dot(self.params[self.wh_name].T)
+        dWx = x.T.dot(dtanh)
+        dWh = prev_h.T.dot(dtanh)
+        db = np.sum(dtanh, axis=0)
         #############################################################################
         #                             END OF YOUR CODE                              #
         #############################################################################
@@ -173,7 +180,12 @@ class VanillaRNN(object):
         # input data. You should use the step_forward function that you defined      #
         # above. You can use a for loop to help compute the forward pass.            #
         ##############################################################################
-        pass
+        h = np.zeros((x.shape[0], x.shape[1], h0.shape[1]))
+        h[:, 0, :], meta_i = self.step_forward(x[:, 0, :], h0)
+        self.meta.append(meta_i)
+        for i in range(1, x.shape[1]):
+            h[:, i, :], meta_i= self.step_forward(x[:, i, :], h[:, i-1, :])
+            self.meta.append(meta_i)
         ##############################################################################
         #                               END OF YOUR CODE                             #
         ##############################################################################
@@ -199,7 +211,26 @@ class VanillaRNN(object):
         # defined above. You can use a for loop to help compute the backward pass.   #
         # HINT: Gradients of hidden states come from two sources                     #
         ##############################################################################
-        pass
+        N, T, H = dh.shape
+        D = self.meta[0][0].shape[1]
+
+        dx = np.zeros((N, T, D))
+        dh0 = np.zeros((N, H))
+        self.grads[self.wx_name] = np.zeros((D, H))
+        self.grads[self.wh_name] = np.zeros((H, H))
+        self.grads[self.b_name] = np.zeros((H,))
+
+        dnext_h = dh[:, T-1, :]
+        for i in reversed(range(T)):
+            dx_i, dprev_h, dWx, dWh, db = self.step_backward(dnext_h, self.meta[i])
+            dx[:, i, :] = dx_i
+            if i==0:
+                dh0 = dprev_h
+            else:
+                dnext_h = dprev_h + dh[:, i-1, :]
+            self.grads[self.wx_name] += dWx
+            self.grads[self.wh_name] += dWh
+            self.grads[self.b_name] += db
         ##############################################################################
         #                               END OF YOUR CODE                             #
         ##############################################################################
@@ -244,8 +275,24 @@ class LSTM(object):
         #############################################################################
         # TODO: Implement the forward pass for a single timestep of an LSTM.        #
         # You may want to use the numerically stable sigmoid implementation above.  #
-        #############################################################################
-        pass
+        ####################################h#########################################
+        H = prev_h.shape[1]
+        a = prev_h.dot(self.params[self.wh_name]) + x.dot(self.params[self.wx_name]) + self.params[self.b_name]
+
+        ai = a[:, :H]
+        af = a[:, H:2*H]
+        ao = a[:, 2*H:3*H]
+        ag = a[:, 3*H:4*H]
+
+        i = sigmoid(ai)
+        f = sigmoid(af)
+        o = sigmoid(ao)
+        g = np.tanh(ag)
+        
+        next_c = f*prev_c + i*(g)
+        next_h = o * np.tanh(next_c)
+        
+        meta = [i, f, o, g, ai, af, ao, ag, prev_h, prev_c, x, next_h, next_c]
         #############################################################################
         #                               END OF YOUR CODE                            #
         #############################################################################
@@ -269,7 +316,28 @@ class LSTM(object):
         # HINT: For sigmoid and tanh you can compute local derivatives in terms of  #
         # the output value of the nonlinearity.                                   #
         #############################################################################
-        pass
+        i, f, o, g, ai, af, ao, ag, prev_h, prev_c, x, next_h, next_c = meta
+
+        d_out = np.tanh(next_c)*dnext_h
+        dnext_c += o * (1-np.tanh(next_c)**2) * dnext_h
+
+        df = prev_c * dnext_c
+        dprev_c = f * dnext_c
+        di = g * dnext_c
+        dg = i * dnext_c
+
+        d_ag = (1-np.tanh(ag)**2) * dg
+        d_ao = sigmoid(ao) * (1-sigmoid(ao)) * d_out
+        d_af = sigmoid(af) * (1-sigmoid(af)) * df
+        d_ai = sigmoid(ai) * (1-sigmoid(ai)) * di
+
+        d_a = np.hstack((d_ai, d_af, d_ao, d_ag))
+
+        dx = d_a.dot(self.params[self.wx_name].T)
+        dWx = x.T.dot(d_a)
+        dprev_h = d_a.dot(self.params[self.wh_name].T)
+        dWh = prev_h.T.dot(d_a)
+        db = np.sum(d_a, axis=0)        
         #############################################################################
         #                               END OF YOUR CODE                            #
         #############################################################################
@@ -307,7 +375,21 @@ class LSTM(object):
         # You should use the lstm_step_forward function that you just defined.      #
         # HINT: The initial cell state c0 should be set to zero.                    #
         #############################################################################
-        pass
+        N, T, D = x.shape
+        N, H = h0.shape
+
+        prev_h = h0
+        prev_c = np.zeros((h0.shape))
+        h = np.zeros((T, N, H))
+        x = x.transpose(1, 0, 2)
+
+        for t in range(T):
+            if t>0:
+                prev_h = h[t-1]
+                prev_c = next_c
+            h[t], next_c, meta_t = self.step_forward(x[t], prev_h, prev_c)
+            self.meta.append(meta_t)
+        h = h.transpose(1, 0, 2)
         #############################################################################
         #                               END OF YOUR CODE                            #
         #############################################################################
@@ -334,7 +416,34 @@ class LSTM(object):
         # HINT: Again note that gradients of hidden states h come from two sources  #
         # HINT: The initial gradient of the cell state is zero.
         #############################################################################
-        pass
+        N, T, H = dh.shape
+        i, f, o, g, ai, af, ao, ag, prev_h, prev_c, x, next_h, next_c = self.meta[0]
+        D = x.shape[-1]
+
+        dx = np.zeros((T, N, D))
+        dh0 = np.zeros((N, H))
+        dWx = np.zeros((D, 4*H))
+        dWh = np.zeros((H, 4*H))
+        db = np.zeros((4*H,))
+
+        dh = dh.transpose(1, 0, 2)
+        dprev_h = np.zeros((N, H))
+        dprev_c = np.zeros((N, H))
+
+        for t in reversed(range(T)):
+            dh_cur = dh[t] + dprev_h
+            dc_cur = dprev_c
+            dx_t, dprev_h, dprev_c, dWx_t, dWh_t, db_t = self.step_backward(dh_cur, dc_cur, self.meta[t])
+            dx[t] += dx_t
+            dh0 = dprev_h
+            dWx += dWx_t
+            dWh += dWh_t
+            db += db_t
+        dx = dx.transpose(1, 0, 2)
+
+        self.grads[self.wx_name] = dWx
+        self.grads[self.wh_name] = dWh
+        self.grads[self.b_name] = db        
         #############################################################################
         #                               END OF YOUR CODE                            #
         #############################################################################
@@ -384,7 +493,8 @@ class word_embedding(object):
         #                                                                            #
         # HINT: This can be done in one line using NumPy's array indexing.           #
         ##############################################################################
-        pass
+        out = self.params[self.w_name][x,:]
+        self.meta = [out, x]
         ##############################################################################
         #                               END OF YOUR CODE                             #
         ##############################################################################
@@ -410,7 +520,9 @@ class word_embedding(object):
         # Note that Words can appear more than once in a sequence.                   #
         # HINT: Look up the function np.add.at                                       #
         ##############################################################################
-        pass
+        out, x = self.meta
+        self.grads[self.w_name] = np.zeros(self.params[self.w_name].shape)
+        np.add.at(self.grads[self.w_name], x, dout)
         ##############################################################################
         #                               END OF YOUR CODE                             #
         ##############################################################################
